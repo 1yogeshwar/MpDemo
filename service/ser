@@ -1,0 +1,175 @@
+const XLSX = require('xlsx');
+
+/* =====================================================
+   1. SYSTEM HEADER CONFIG (ARRAY-BASED)
+   ===================================================== */
+
+const REQUIRED_HEADERS = [
+  { systemHeader: 'id', mappedHeader: '' },
+  { systemHeader: 'team', mappedHeader: '' },
+  { systemHeader: 'position', mappedHeader: '' },
+  { systemHeader: 'player', mappedHeader: '' },
+  { systemHeader: 'age', mappedHeader: '' },
+  { systemHeader: 'caps', mappedHeader: '' },
+  { systemHeader: 'goals', mappedHeader: '' },
+  { systemHeader: 'wc_goals', mappedHeader: '' },
+  { systemHeader: 'league', mappedHeader: '' },
+  { systemHeader: 'club', mappedHeader: '' }
+];
+
+/* =====================================================
+   2. HELPERS
+   ===================================================== */
+
+function normalizeHeader(header) {
+  return header
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/_/g, '');
+}
+
+function normalizeDate(value) {
+  if (!value) return null;
+
+  let date;
+
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === 'number') {
+    date = new Date(Math.round((value - 25569) * 86400 * 1000));
+  } else {
+    date = new Date(value);
+  }
+
+  if (isNaN(date)) return null;
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+
+  return `${y}/${m}/${d}`;
+}
+
+/* =====================================================
+   3. HEADER MAPPING (NO INDEX)
+   ===================================================== */
+
+function buildHeaderMapping(fileHeaders) {
+  const normalizedFileHeaders = fileHeaders.map(h => normalizeHeader(h));
+
+  REQUIRED_HEADERS.forEach(req => {
+    const systemKey = normalizeHeader(req.systemHeader);
+
+    const matchIndex = normalizedFileHeaders.findIndex(
+      fh => fh === systemKey
+    );
+
+    if (matchIndex !== -1) {
+      req.mappedHeader = fileHeaders[matchIndex];
+    }
+  });
+
+  const missing = REQUIRED_HEADERS.filter(h => !h.mappedHeader);
+  if (missing.length) {
+    throw new Error(
+      `Missing required headers: ${missing
+        .map(h => h.systemHeader)
+        .join(', ')}`
+    );
+  }
+
+  return REQUIRED_HEADERS;
+}
+
+/* =====================================================
+   4. BATCH INSERT (STUB)
+   ===================================================== */
+
+async function insertBatch(batch) {
+  // Replace with real DB insert
+  console.log(`Inserted batch of ${batch.length}`);
+}
+
+/* =====================================================
+   5. PROCESS EXCEL FILE (HEADER-NAME BASED)
+   ===================================================== */
+
+exports.processExcelFile = async (filePath, batchSize = 100) => {
+  const workbook = XLSX.readFile(filePath, { cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+  // Convert rows → array of objects using headers as keys
+  const rows = XLSX.utils.sheet_to_json(sheet, {
+    defval: null
+  });
+
+  const fileHeaders = Object.keys(rows[0]);
+  const headerConfig = buildHeaderMapping(fileHeaders);
+
+  const processedData = [];
+  let batch = [];
+
+  for (const row of rows) {
+    const record = {};
+    const remarks = [];
+
+    headerConfig.forEach(h => {
+      let value = row[h.mappedHeader];
+
+      if (typeof value === 'string') {
+        value = value.trim();
+      }
+
+      if (h.systemHeader === 'date') {
+        value = normalizeDate(value);
+        if (!value) remarks.push('Invalid date');
+      }
+
+      if (
+        value === null ||
+        value === undefined ||
+        value === '' ||
+        value === 0
+      ) {
+        remarks.push(`${h.systemHeader} missing`);
+      }
+
+      record[h.systemHeader] = value ?? null;
+    });
+
+    record.remarks = remarks.join(', ');
+    processedData.push(record);
+
+    // Only valid rows go to DB
+    if (!remarks.length) {
+      batch.push(record);
+    }
+
+    if (batch.length === batchSize) {
+      await insertBatch(batch);
+      batch = [];
+    }
+  }
+
+  if (batch.length) {
+    await insertBatch(batch);
+  }
+
+  return processedData;
+};
+
+/* =====================================================
+   6. EXPORT VALIDATED XLSX
+   ===================================================== */
+
+exports.exportValidated = (processedData) => {
+  const ws = XLSX.utils.json_to_sheet(processedData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Validated');
+
+  return XLSX.write(wb, {
+    type: 'buffer',
+    bookType: 'xlsx'
+  });
+};
