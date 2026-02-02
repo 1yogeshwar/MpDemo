@@ -1,50 +1,45 @@
-const {
-  processExcelFile,
-  exportValidated
-} = require('../service/fs.service');
+// 1️⃣ Decrypt the original encrypted file
+const decryptedFile = await decryptSingleFile(file);
 
-exports.uploadController = async (req, res) => {
-  try {
-    // 1️⃣ File validation
-    if (!req.file || !req.file.path) {
-      return res.status(400).json({
-        success: false,
-        message: 'No file uploaded'
-      });
-    }
+// 2️⃣ Process Excel (this inserts ROWS into DB)
+const excelData = await processExcelFile(
+  decryptedFile.decrypted_content
+);
 
-    // 2️⃣ Process excel (validate + batch insert)
-    const processedData = await processExcelFile(req.file.path);
+console.log('Rows processed:', excelData.count);
 
-    if (!processedData || !processedData.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'Excel file is empty or invalid'
-      });
-    }
+// 3️⃣ Export processed Excel (ALL columns + remarks)
+const buffer = await exportValidated(
+  excelData.processedData
+);
 
-    // 3️⃣ Export validated XLSX
-    const buffer = exportValidated(processedData);
+// ❌ DO NOT write plain file to disk
+// fs.writeFileSync(`./${file.file_name}`, buffer);
 
-    // 4️⃣ Set headers (controller responsibility ✅)
-    res.setHeader(
-      'Content-Disposition',
-      'attachment; filename=validated.xlsx'
-    );
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
+// 4️⃣ 🔐 Encrypt the processed Excel
+const reEncrypted = await commonUtils.encryptFileBuffer(
+  buffer,                  // processed Excel buffer
+  file.file_name,
+  file,
+  file.encryption_key,
+  file.encryption_iv
+);
 
-    // 5️⃣ Send file
-    return res.send(buffer);
+// 5️⃣ 💾 Store encrypted processed file in DB
+await fileMaster.saveProcessedEncryptedFile({
+  file_id: file.id,
+  encrypted_file: reEncrypted.file
+});
 
-  } catch (error) {
-    console.error('Upload Controller Error:', error);
+// 6️⃣ Update file status
+await fileMaster.updateStatus(file.id, 'completed', {
+  remark: `Success: ${excelData.count} rows processed`,
+  scanned_on: new Date()
+});
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || 'File processing failed'
-    });
-  }
-};
+// 7️⃣ Push success summary
+summary.push({
+  id: file.id,
+  name: file.file_name,
+  status: 'Success'
+});
