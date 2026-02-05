@@ -1,129 +1,35 @@
-const processExcelFile = async (input, fileId, clientId) => {
-  // ... existing code ...
+// ADD AT TOP (after CRITICAL_FIELDS definition):
+const headerCache = REQUIRED_HEADERS.map(h => ({
+  mappedHeader: h.mappedHeader,
+  systemHeader: h.systemHeader,
+  isCritical: CRITICAL_FIELDS.has(h.systemHeader),
+  isDateField: h.systemHeader.toLowerCase().includes('date') || h.systemHeader.toLowerCase().includes('_mo')
+}));
 
-  // Reset counters (csv) ->
-  // .replace(/_unit_sale_amount/, 'unit_sale_amount');
+// CHANGE forEach to use headerCache:
+headerCache.forEach(h => {
+  let val = trimSpace(row[h.mappedHeader]);
 
-  const columns = [
-    // ...
-  ];
+  if (h.isDateField && val) {
+    val = formatExcelDate(val);
+  }
 
-  // ADDED: CRITICAL FIELDS SET FOR OPTIMIZED O(1) LOOKUP INSTEAD OF 6 SEPARATE IF STATEMENTS
-  const CRITICAL_FIELDS = new Set([
-    'Sale Order Number',
-    'Product SKU', 
-    'Ubd Sale Amount',
-    'Qty',
-    'Order Date',
-    'Order Month'
-  ]);
-
-  const sql = `INSERT IGNORE INTO ucsr_sales_order (${columns}) VALUES ?`;
+  if (h.isCritical && (!val || val === '')) {
+    skipRow = true;
+  }
   
-  for (const row of rows) {
-    const rowData = {};
-    const remarks = [];
-    let skipRow = false; // flag to skip row if critical field missing
+  // ... rest stays same
+});
 
-    REQUIRED_HEADERS.forEach(h => {
-      let val = trimSpace(row[h.mappedHeader]);
+// CHANGE: Only push rows with remarks
+if (remarks.length > 0) {
+  processedData.push({
+    ...row,
+    remarks: remarks.join(', ')
+  });
+}
 
-      // Format date fields
-      if (
-        h.systemHeader.toLowerCase().includes('date') ||
-        h.systemHeader.toLowerCase().includes('_mo')
-      ) {
-        val = formatExcelDate(val);
-      }
-
-      // CHANGED: OPTIMIZED - SINGLE CHECK REPLACES 6 SEPARATE IF STATEMENTS (LINES 28-50 IN ORIGINAL)
-      // OLD CODE WAS:
-      // if (h.systemHeader === 'Sale Order Number' && (!val || val === '')) skipRow = true;
-      // if (h.systemHeader === 'Product SKU' && (!val || val === '')) skipRow = true;
-      // ... (4 MORE SIMILAR CHECKS)
-      if (CRITICAL_FIELDS.has(h.systemHeader) && (!val || val === '')) {
-        skipRow = true;
-      }
-
-      rowData[h.mappedHeader] = val ?? null;
-
-      if (val === null || val === '') {
-        remarks.push(`${h.systemHeader} is missing`);
-      }
-    });
-
-    processedData.push({
-      ...row,
-      remarks: remarks.join(', ')
-    });
-
-    // If critical field is missing, skip DB insertion, count as failed, but keep
-    if (skipRow) {
-      failedCount++;
-      totalProcessed++;
-      continue; // Skip inserting this row entirely
-    }
-
-    // CHANGED: OPTIMIZED - BUILD ARRAY DIRECTLY WITHOUT SPREAD OPERATOR FOR BETTER MEMORY EFFICIENCY
-    // OLD CODE WAS:
-    // dbBuffer.push({
-    //   ...REQUIRED_HEADERS.map(h => rowData[h.mappedHeader]),
-    //   fileId,
-    //   clientId
-    // });
-    const rowArray = REQUIRED_HEADERS.map(h => rowData[h.mappedHeader]);
-    rowArray.push(fileId, clientId);
-    
-    dbBuffer.push(rowArray);
-
-    // Batch handling
-    if (dbBuffer.length >= BATCH_SIZE) {
-      pendingInsertBatches.push([...dbBuffer]);
-
-      const inserted = dbBuffer.length;
-      successCount += inserted;
-      totalProcessed += inserted;
-
-      dbBuffer.length = 0;
-    }
-  }
-
-  // Handle final batch
-  if (dbBuffer.length > 0) {
-    pendingInsertBatches.push([...dbBuffer]);
-
-    const inserted = dbBuffer.length;
-    successCount += inserted;
-    totalProcessed += inserted;
-  }
-
-  // Function to execute batched inserts
-  // ADDED: CHECK IF successCount > 0 BEFORE EXECUTING DB INSERTS
-  // THIS PREVENTS INSERTING DATA WHEN ALL ROWS FAILED (SCENARIO 2: REJECTED)
-  const executeInsert = async () => {
-    // Only execute if there are successful rows
-    if (successCount > 0) {
-      for (const batch of pendingInsertBatches) {
-        await pool.executeQuery(sql, [batch]);
-      }
-    }
-  };
-
-  // Execute inserts only if we have successful rows
-  await executeInsert();
-
-  // ADDED: LOG failedCount TO DEBUG
-  console.log("totalProcessed", totalProcessed);
-  console.log("successCount", successCount);
-  console.log("failedCount", failedCount);
-
-  return {
-    processedData,
-    successCount,
-    failedCount,
-    totalProcessed,
-    remarks: processedData
-      .filter(r => r.remarks)
-      .map(r => ({ error: r.remarks }))
-  };
-};
+// CHANGE: Batch size from 1000 to 5000
+if (dbBuffer.length >= 5000) {
+  // ... rest stays same
+}
